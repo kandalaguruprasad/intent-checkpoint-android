@@ -1,0 +1,9 @@
+pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
+plugins { id("com.facebook.react.settings") }
+extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
+rootProject.name = 'dev.intent.checkpoint'
+include ':app'
+// Platform-independent engine (state machine, detection dedup, latency stats). Standalone build
+// so it can be unit-tested on a plain JVM: ./gradlew -p intent-core test
+includeBuild('intent-core')
+includeBuild('../node_modules/@react-native/gradle-plugin')

@@ -1,0 +1,91 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Metro / dev tooling only; the app itself sends nothing off-device (PRD §52). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Foreground detection (special app access, granted in Settings). -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- Checkpoint + reminder overlays (special app access, granted in Settings). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+      Timer-expiry backstop. User-grantable special access, denied by default on 14+; we degrade
+      to inexact alarms without it. USE_EXACT_ALARM is intentionally NOT requested (Play restricts
+      it to alarm-clock/calendar apps).
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!--
+      ADR-009: no QUERY_ALL_PACKAGES. Phase 0 monitors one hardcoded package; the curated
+      ~150-200 package list lands with the app picker.
+    -->
+    <queries>
+        <package android:name="com.instagram.android" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
+
+    <application
+      android:name=".MainApplication"
+      android:label="@string/app_name"
+      android:icon="@mipmap/ic_launcher"
+      android:roundIcon="@mipmap/ic_launcher_round"
+      android:allowBackup="false"
+      android:dataExtractionRules="@xml/data_extraction_rules"
+      android:theme="@style/AppTheme"
+      android:usesCleartextTraffic="${usesCleartextTraffic}"
+      android:supportsRtl="true">
+      <activity
+        android:name=".MainActivity"
+        android:label="@string/app_name"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+        android:launchMode="singleTask"
+        android:windowSoftInputMode="adjustResize"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent-filter>
+      </activity>
+
+      <!-- Everything below runs in the isolated, React-free :engine process. -->
+      <service
+        android:name=".service.MonitoringService"
+        android:process=":engine"
+        android:exported="false"
+        android:foregroundServiceType="specialUse">
+        <property
+            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+            android:value="Digital wellbeing: watches which app is in the foreground (via Usage Access) so it can show a user-requested intention checkpoint and session timer over apps the user chose to monitor. Runs only while the user has monitoring switched on; the notification shows the active session and can end it." />
+      </service>
+
+      <provider
+        android:name=".bridge.EngineProvider"
+        android:authorities="${applicationId}.engine"
+        android:process=":engine"
+        android:exported="false" />
+
+      <receiver
+        android:name=".service.BootReceiver"
+        android:process=":engine"
+        android:exported="false">
+        <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED" />
+            <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+        </intent-filter>
+      </receiver>
+
+      <receiver
+        android:name=".service.ExpiryAlarmReceiver"
+        android:process=":engine"
+        android:exported="false" />
+    </application>
+</manifest>
