@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "android": "react-native run-android",
-    "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "android:device": "react-native run-android --active-arch-only",
+    "build:apk": "react-native build-android --tasks assembleRelease",
+    "build:aab": "react-native build-android --tasks bundleRelease",
+    "check": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
     "react": "19.2.3",

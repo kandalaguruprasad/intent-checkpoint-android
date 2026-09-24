@@ -52,32 +52,20 @@ RN process (dev.intent.checkpoint)          :engine process (dev.intent.checkpoi
 - **SQLite in the engine process is the only source of truth.** RN reads and writes through
   `ContentProvider.call()`; nothing about a session lives only in JS memory.
 
-## Running it
+## Building and running
+
+Full setup (Windows, JDK, Android SDK, phone, signing, troubleshooting): **[docs/BUILD.md](docs/BUILD.md)**.
 
 ```sh
 npm install
-npm run android            # device/emulator with USB debugging
+npm run android:device   # debug build on a connected phone (Metro)
+npm run build:apk        # installable release APK, no Metro needed
+npm run check            # lint + typecheck + Jest
+(cd android && ./gradlew -p intent-core test)   # engine state machine on the JVM
 ```
 
-Grant the special accesses from the POC screen, or with adb for test runs:
-
-```sh
-PKG=dev.intent.checkpoint
-adb shell appops set $PKG GET_USAGE_STATS allow
-adb shell appops set $PKG SYSTEM_ALERT_WINDOW allow
-adb shell appops set $PKG SCHEDULE_EXACT_ALARM allow     # optional, makes the expiry backstop exact
-```
-
-Checks:
-
-```sh
-npm run lint && npm run typecheck && npm test            # JS
-(cd android && ./gradlew -p intent-core test)            # engine state machine, JVM only
-(cd android && ./gradlew assembleDebug)                  # full app (needs Android SDK)
-```
-
-CI (`.github/workflows/ci.yml`) runs all three on every push, plus an **emulator job**: a real
-debug build that drives the overlay flow and uploads screenshots (`emulator-screenshots`).
+CI (`.github/workflows/ci.yml`) runs these on every push, plus an **emulator job**: a real debug
+build that drives the overlay flow and uploads screenshots (`emulator-screenshots`).
 To preview the overlays on your own phone: Settings → Preview.
 
 ## Known limits (by design, per the PRD)
