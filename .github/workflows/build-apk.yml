@@ -1,0 +1,31 @@
+name: Build device APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build release APK (debug-signed, for direct install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      # No upload key is configured here, so this falls back to the committed debug
+      # keystore per android/app/build.gradle — fine to sideload on your own phone,
+      # never for the Play Store (see docs/BUILD.md, "Release signing").
+      - run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a,armeabi-v7a --console=plain
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-device
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 7
