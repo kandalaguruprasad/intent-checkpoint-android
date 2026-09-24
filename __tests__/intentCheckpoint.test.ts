@@ -2,8 +2,11 @@ import {
   parseNativeEvent,
   parseSession,
 } from '../src/services/intentCheckpoint';
-import { describeEvent } from '../src/features/poc/usePocState';
-import { formatRemaining, latencyVerdict } from '../src/features/poc/format';
+import { describeEvent } from '../src/features/settings/useDiagnostics';
+import {
+  formatRemaining,
+  latencyVerdict,
+} from '../src/features/settings/format';
 
 jest.mock('../src/native/NativeIntentCheckpoint', () => ({
   __esModule: true,
@@ -20,6 +23,7 @@ const raw = {
   plannedEndAt: 1_700_000_600_000,
   endedAt: null,
   wallClockSeconds: null,
+  foregroundSeconds: 0,
   extensionCount: 0,
   state: 'SESSION_ACTIVE',
   completionReason: null,

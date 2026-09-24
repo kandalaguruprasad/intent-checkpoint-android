@@ -36,6 +36,8 @@ export interface SessionRecord {
   plannedEndAt: number | null;
   endedAt: number | null;
   wallClockSeconds: number | null;
+  /** Time the app was actually in front, including a running interval at read time. */
+  foregroundSeconds: number;
   extensionCount: number;
   state: SessionState;
   completionReason: CompletionReason | null;
@@ -64,6 +66,63 @@ export interface MonitoringStatus {
   running: boolean;
   monitoredPackages: string[];
 }
+
+export interface AppDay {
+  packageName: string;
+  appName: string;
+  opens: number;
+  actualSeconds: number;
+}
+
+/** Derived natively from persisted sessions only (PRD §50). */
+export interface DailySummary {
+  opensNoticed: number;
+  intentionalSessions: number;
+  choseNotToOpen: number;
+  plannedSeconds: number;
+  actualSecondsTimed: number;
+  actualSecondsAll: number;
+  extensions: number;
+  finishedOnTime: number;
+  perApp: AppDay[];
+}
+
+export type AppCategory =
+  | 'social'
+  | 'video'
+  | 'games'
+  | 'shopping'
+  | 'news'
+  | 'browsers'
+  | 'other';
+
+export interface LaunchableApp {
+  packageName: string;
+  label: string;
+  category: AppCategory;
+  /** Banking / payment / authenticator / password heuristic. */
+  sensitive: boolean;
+  /** PNG data URI or null. */
+  icon: string | null;
+}
+
+export interface MonitoredApp {
+  packageName: string;
+  appName: string;
+  category: AppCategory;
+  icon: string | null;
+}
+
+export type OverlayPreviewKind =
+  | 'pause'
+  | 'intention'
+  | 'reminder'
+  | 'reminder-warning'
+  | 'reminder-no-timer'
+  | 'timesup'
+  | 'extension'
+  | 'complete'
+  | 'hide';
 
 export type NativeEvent =
   | { type: 'foregroundAppChanged'; packageName: string | null }

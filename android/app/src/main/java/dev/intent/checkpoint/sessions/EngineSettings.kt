@@ -10,6 +10,10 @@ class EngineSettings(private val db: IntentDatabase) {
         get() = get(KEY_MONITORING_ENABLED) == "1"
         set(value) = put(KEY_MONITORING_ENABLED, if (value) "1" else "0")
 
+    var onboardingComplete: Boolean
+        get() = get(KEY_ONBOARDING_COMPLETE) == "1"
+        set(value) = put(KEY_ONBOARDING_COMPLETE, if (value) "1" else "0")
+
     private fun get(key: String): String? =
         db.readableDatabase.query("user_settings", arrayOf("value"), "key = ?", arrayOf(key), null, null, null)
             .use { if (it.moveToFirst()) it.getString(0) else null }
@@ -28,6 +32,7 @@ class EngineSettings(private val db: IntentDatabase) {
 
     private companion object {
         const val KEY_MONITORING_ENABLED = "monitoring_enabled"
+        const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
     }
 }
 

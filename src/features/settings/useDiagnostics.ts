@@ -41,10 +41,10 @@ export function describeEvent(e: NativeEvent): string {
 }
 
 /**
- * Phase 0 diagnostics state. Everything here is a read-through of native state; the only local
+ * Diagnostics state (Settings → Diagnostics). Everything here is a read-through of native state; the only local
  * state is the event log (ephemeral by design).
  */
-export function usePocState() {
+export function useDiagnostics() {
   const [permissions, setPermissions] = useState<PermissionState | null>(null);
   const [status, setStatus] = useState<MonitoringStatus | null>(null);
   const [session, setSession] = useState<SessionRecord | null>(null);

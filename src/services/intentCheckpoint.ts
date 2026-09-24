@@ -5,7 +5,12 @@
 import { NativeEventEmitter, Platform } from 'react-native';
 import NativeIntentCheckpoint from '../native/NativeIntentCheckpoint';
 import type {
+  AppCategory,
+  DailySummary,
   LatencySummary,
+  LaunchableApp,
+  MonitoredApp,
+  OverlayPreviewKind,
   MonitoringStatus,
   NativeErrorCode,
   NativeEvent,
@@ -67,6 +72,7 @@ export function parseSession(raw: unknown): SessionRecord | null {
     plannedEndAt: numOrNull(raw.plannedEndAt),
     endedAt: numOrNull(raw.endedAt),
     wallClockSeconds: numOrNull(raw.wallClockSeconds),
+    foregroundSeconds: numOrNull(raw.foregroundSeconds) ?? 0,
     extensionCount: numOrNull(raw.extensionCount) ?? 0,
     completionReason:
       reason === 'done' ||
@@ -78,6 +84,74 @@ export function parseSession(raw: unknown): SessionRecord | null {
     createdAt: numOrNull(raw.createdAt) ?? 0,
     updatedAt: numOrNull(raw.updatedAt) ?? 0,
   };
+}
+
+const CATEGORIES: ReadonlySet<AppCategory> = new Set([
+  'social',
+  'video',
+  'games',
+  'shopping',
+  'news',
+  'browsers',
+  'other',
+]);
+
+const category = (v: unknown): AppCategory =>
+  typeof v === 'string' && CATEGORIES.has(v as AppCategory)
+    ? (v as AppCategory)
+    : 'other';
+
+const num = (v: unknown): number => numOrNull(v) ?? 0;
+
+export function parseSummary(raw: unknown): DailySummary {
+  const r = isObject(raw) ? raw : {};
+  const perApp = Array.isArray(r.perApp) ? r.perApp : [];
+  return {
+    opensNoticed: num(r.opensNoticed),
+    intentionalSessions: num(r.intentionalSessions),
+    choseNotToOpen: num(r.choseNotToOpen),
+    plannedSeconds: num(r.plannedSeconds),
+    actualSecondsTimed: num(r.actualSecondsTimed),
+    actualSecondsAll: num(r.actualSecondsAll),
+    extensions: num(r.extensions),
+    finishedOnTime: num(r.finishedOnTime),
+    perApp: perApp.filter(isObject).map(a => ({
+      packageName: String(a.packageName ?? ''),
+      appName: String(a.appName ?? ''),
+      opens: num(a.opens),
+      actualSeconds: num(a.actualSeconds),
+    })),
+  };
+}
+
+export function parseLaunchableApps(raw: unknown): LaunchableApp[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isObject)
+    .filter(
+      a => typeof a.packageName === 'string' && typeof a.label === 'string',
+    )
+    .map(a => ({
+      packageName: a.packageName as string,
+      label: a.label as string,
+      category: category(a.category),
+      sensitive: a.sensitive === true,
+      icon: typeof a.icon === 'string' ? a.icon : null,
+    }));
+}
+
+export function parseMonitoredApps(raw: unknown): MonitoredApp[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isObject)
+    .filter(a => typeof a.packageName === 'string')
+    .map(a => ({
+      packageName: a.packageName as string,
+      appName:
+        typeof a.appName === 'string' ? a.appName : (a.packageName as string),
+      category: category(a.category),
+      icon: typeof a.icon === 'string' ? a.icon : null,
+    }));
 }
 
 function parsePermissions(raw: unknown): PermissionState | null {
@@ -181,6 +255,40 @@ export const intentCheckpoint = {
     ),
   completeSession: (sessionId: string, reason: RequestableCompletionReason) =>
     call(() => NativeIntentCheckpoint.completeSession(sessionId, reason)),
+
+  getSummary: async (fromMs: number, toMs: number): Promise<DailySummary> =>
+    parseSummary(
+      await call(() => NativeIntentCheckpoint.getSummary(fromMs, toMs)),
+    ),
+  listSessions: async (
+    fromMs: number,
+    toMs: number,
+    limit = 200,
+  ): Promise<SessionRecord[]> => {
+    const raw = await call(() =>
+      NativeIntentCheckpoint.listSessions(fromMs, toMs, limit),
+    );
+    return (Array.isArray(raw) ? raw : [])
+      .map(parseSession)
+      .filter((x): x is SessionRecord => x !== null);
+  },
+  listLaunchableApps: async (): Promise<LaunchableApp[]> =>
+    parseLaunchableApps(
+      await call(() => NativeIntentCheckpoint.listLaunchableApps()),
+    ),
+  getMonitoredApps: async (): Promise<MonitoredApp[]> =>
+    parseMonitoredApps(
+      await call(() => NativeIntentCheckpoint.getMonitoredApps()),
+    ),
+  setMonitoredApps: (
+    apps: { packageName: string; appName: string; category: AppCategory }[],
+  ) => call(() => NativeIntentCheckpoint.setMonitoredApps(apps)),
+  isOnboardingComplete: () =>
+    call(() => NativeIntentCheckpoint.isOnboardingComplete()),
+  setOnboardingComplete: (done: boolean) =>
+    call(() => NativeIntentCheckpoint.setOnboardingComplete(done)),
+  previewOverlay: (kind: OverlayPreviewKind) =>
+    call(() => NativeIntentCheckpoint.previewOverlay(kind)),
 
   getLatencyStats: (): Promise<LatencySummary> =>
     call(() => NativeIntentCheckpoint.getLatencyStats()),

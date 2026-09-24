@@ -10,11 +10,14 @@ import android.os.Bundle
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import dev.intent.checkpoint.bridge.EngineProtocol as P
 import dev.intent.checkpoint.engine.EngineEvents
+import dev.intent.checkpoint.monitoring.AppCatalog
 import dev.intent.checkpoint.monitoring.UsageEventsSource
+import dev.intent.checkpoint.sessions.SessionJson
 import dev.intent.checkpoint.permissions.PermissionChecker
 import dev.intent.checkpoint.permissions.SettingsIntents
 import dev.intent.checkpoint.service.MonitoringService
@@ -132,6 +135,73 @@ class IntentCheckpointModule(private val reactContext: ReactApplicationContext) 
             putString(P.KEY_SESSION_ID, sessionId)
             putString(P.KEY_REASON, reason)
         })
+        null
+    }
+
+    // --- screens: Today, History, Choose Apps ------------------------------------------------
+
+    override fun getSummary(fromMs: Double, toMs: Double, promise: Promise) = io.runAsync(promise) {
+        val b = engineCall(P.GET_SUMMARY, Bundle().apply {
+            putLong(P.KEY_FROM, fromMs.toLong())
+            putLong(P.KEY_TO, toMs.toLong())
+        })
+        JSONObject(b.getString(P.KEY_JSON)!!).toWritableMap()
+    }
+
+    override fun listSessions(fromMs: Double, toMs: Double, limit: Double, promise: Promise) = io.runAsync(promise) {
+        val b = engineCall(P.LIST_SESSIONS, Bundle().apply {
+            putLong(P.KEY_FROM, fromMs.toLong())
+            putLong(P.KEY_TO, toMs.toLong())
+            putInt(P.KEY_LIMIT, limit.toInt())
+        })
+        JSONArray(b.getString(P.KEY_JSON)!!).toWritableArray()
+    }
+
+    /** Runs in the RN process: PackageManager reads need no engine round-trip. */
+    override fun listLaunchableApps(promise: Promise) = io.runAsync(promise) {
+        JSONArray(AppCatalog.launchable(reactContext).map { SessionJson.toJson(it) }).toWritableArray()
+    }
+
+    override fun getMonitoredApps(promise: Promise) = io.runAsync(promise) {
+        val b = engineCall(P.GET_MONITORED_APPS)
+        val arr = JSONArray(b.getString(P.KEY_JSON)!!)
+        // Icons are resolved here, not stored: they follow app updates and theme changes.
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            o.put("icon", AppCatalog.iconDataUri(reactContext, o.getString("packageName")) ?: JSONObject.NULL)
+        }
+        arr.toWritableArray()
+    }
+
+    override fun setMonitoredApps(apps: ReadableArray, promise: Promise) = io.runAsync(promise) {
+        val json = JSONArray()
+        for (i in 0 until apps.size()) {
+            val m = apps.getMap(i) ?: continue
+            json.put(
+                JSONObject()
+                    .put("packageName", m.getString("packageName"))
+                    .put("appName", m.getString("appName"))
+                    .put("category", if (m.hasKey("category")) m.getString("category") else "other"),
+            )
+        }
+        engineCall(P.SET_MONITORED_APPS, Bundle().apply { putString(P.KEY_JSON, json.toString()) })
+        null
+    }
+
+    override fun isOnboardingComplete(promise: Promise) = io.runAsync(promise) {
+        engineCall(P.GET_ONBOARDING).getBoolean(P.KEY_DONE)
+    }
+
+    override fun setOnboardingComplete(done: Boolean, promise: Promise) = io.runAsync(promise) {
+        engineCall(P.SET_ONBOARDING, Bundle().apply { putBoolean(P.KEY_DONE, done) })
+        null
+    }
+
+    override fun previewOverlay(kind: String, promise: Promise) = io.runAsync(promise) {
+        if (!PermissionChecker.canDrawOverlays(reactContext)) {
+            throw BridgeException("E_PERMISSION_DENIED", "Display over other apps is not granted")
+        }
+        engineCall(P.PREVIEW_OVERLAY, Bundle().apply { putString(P.KEY_KIND, kind) })
         null
     }
 

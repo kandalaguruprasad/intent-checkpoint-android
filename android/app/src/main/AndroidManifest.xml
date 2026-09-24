@@ -22,11 +22,14 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!--
-      ADR-009: no QUERY_ALL_PACKAGES. Phase 0 monitors one hardcoded package; the curated
-      ~150-200 package list lands with the app picker.
+      ADR-009 / ADR-012: no QUERY_ALL_PACKAGES. The Choose Apps picker only needs apps the user can
+      launch, so visibility is scoped to launcher activities (plus HOME for "Go home").
     -->
     <queries>
-        <package android:name="com.instagram.android" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.HOME" />

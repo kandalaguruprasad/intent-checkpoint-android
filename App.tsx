@@ -4,15 +4,18 @@
 
 import { StatusBar, useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { PocScreen } from './src/features/poc/PocScreen';
+import { AppRoot } from './src/features/shell/AppRoot';
+import { PreviewProvider } from './src/features/shell/preview';
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <PocScreen />
+      <PreviewProvider>
+        <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
+        <AppRoot />
+      </PreviewProvider>
     </SafeAreaProvider>
   );
 }

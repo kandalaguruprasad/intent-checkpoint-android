@@ -54,6 +54,18 @@ export interface Spec extends TurboModule {
     extraSeconds: number,
   ): Promise<void>;
   completeSession(sessionId: string, reason: string): Promise<void>;
+  /** Summary of sessions created in [fromMs, toMs); DailySummary-shaped object. */
+  getSummary(fromMs: number, toMs: number): Promise<Object>;
+  /** SessionRecord-shaped objects, newest first. */
+  listSessions(fromMs: number, toMs: number, limit: number): Promise<Object[]>;
+  /** Installed, launchable apps with category, sensitive flag and a small icon data URI. */
+  listLaunchableApps(): Promise<Object[]>;
+  getMonitoredApps(): Promise<Object[]>;
+  setMonitoredApps(apps: Object[]): Promise<void>;
+  isOnboardingComplete(): Promise<boolean>;
+  setOnboardingComplete(done: boolean): Promise<void>;
+  /** Renders a native overlay surface with fixture data (design preview). */
+  previewOverlay(kind: string): Promise<void>;
   /** Phase 0 instrumentation (P0-011). */
   getLatencyStats(): Promise<NativeLatencySummary>;
   clearLatencyStats(): Promise<void>;

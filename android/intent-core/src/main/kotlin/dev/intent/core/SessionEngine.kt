@@ -43,8 +43,10 @@ class SessionEngine(
                 SessionState.PAUSE -> end(s, SessionState.SESSION_ABANDONED, CompletionReason.ABANDONED, now, fx)
                 // We don't know whether the target is still in front until the first poll. Start
                 // the grace window now; the poll moves it back to ACTIVE if the user is still there.
-                SessionState.SESSION_ACTIVE ->
-                    save(s.copy(state = SessionState.BACKGROUND_GRACE, backgroundedAt = now, updatedAt = now), fx)
+                SessionState.SESSION_ACTIVE -> save(
+                    s.stopClock(now).copy(state = SessionState.BACKGROUND_GRACE, backgroundedAt = now, updatedAt = now),
+                    fx,
+                )
                 // AWAITING_INTENTION / TIME_EXPIRED / EXTENSION_REQUEST stay unresolved and are
                 // re-shown when their app is next in front. BACKGROUND_GRACE expires via tick().
                 else -> Unit
@@ -132,6 +134,7 @@ class SessionEngine(
                 plannedEndAt = seconds?.let { now + it * 1000 },
                 state = if (inFront) SessionState.SESSION_ACTIVE else SessionState.BACKGROUND_GRACE,
                 backgroundedAt = if (inFront) null else now,
+                activeSince = if (inFront) now else null,
                 updatedAt = now,
             ),
             fx,
@@ -274,7 +277,10 @@ class SessionEngine(
         val s = store.findOpenForPackage(packageName) ?: return
         when (s.state) {
             SessionState.SESSION_ACTIVE -> {
-                save(s.copy(state = SessionState.BACKGROUND_GRACE, backgroundedAt = now, updatedAt = now), fx)
+                save(
+                    s.stopClock(now).copy(state = SessionState.BACKGROUND_GRACE, backgroundedAt = now, updatedAt = now),
+                    fx,
+                )
                 fx += EngineEffect.HideReminder
             }
             // Pressing Home on the checkpoint is the same answer as "Not now".
@@ -314,7 +320,12 @@ class SessionEngine(
                     startCheckpoint(packageName, rule, now, fx)
                 } else {
                     val resumed = save(
-                        existing.copy(state = SessionState.SESSION_ACTIVE, backgroundedAt = null, updatedAt = now),
+                        existing.copy(
+                            state = SessionState.SESSION_ACTIVE,
+                            backgroundedAt = null,
+                            activeSince = now,
+                            updatedAt = now,
+                        ),
                         fx,
                     )
                     if (resumed.plannedEndAt != null && now >= resumed.plannedEndAt) {
@@ -338,6 +349,7 @@ class SessionEngine(
                 plannedDurationSeconds = seconds,
                 plannedEndAt = seconds?.let { now + it * 1000 },
                 state = SessionState.SESSION_ACTIVE,
+                activeSince = now,
             )
             store.insert(s)
             fx += EngineEffect.SessionChanged(s)
@@ -394,7 +406,7 @@ class SessionEngine(
         endedAt: Long,
         fx: MutableList<EngineEffect>,
     ): Session = save(
-        s.copy(
+        s.stopClock(endedAt).copy(
             state = terminal,
             completionReason = reason,
             endedAt = endedAt,
@@ -404,6 +416,12 @@ class SessionEngine(
         ),
         fx,
     )
+
+    /** Closes the running in-front interval at [at] (never negative, e.g. boot sweep). */
+    private fun Session.stopClock(at: Long): Session {
+        val since = activeSince ?: return this
+        return copy(foregroundMs = foregroundMs + (at - since).coerceAtLeast(0), activeSince = null)
+    }
 
     private fun showReminderIfEnabled(s: Session, fx: MutableList<EngineEffect>) {
         val rule = rules.ruleFor(s.packageName)

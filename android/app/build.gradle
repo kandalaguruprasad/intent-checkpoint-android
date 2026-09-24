@@ -52,6 +52,12 @@ react {
 
     /* Autolinking */
     autolinkLibrariesWithApp()
+
+    // CI emulator run: bundle JS into the debug APK so it runs without Metro, while keeping
+    // BuildConfig.DEBUG and the debug-only test receiver. Local dev is unchanged.
+    if (project.hasProperty("bundleJsInDebug")) {
+        debuggableVariants = []
+    }
 }
 
 /**

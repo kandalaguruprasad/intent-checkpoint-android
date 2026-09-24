@@ -9,6 +9,7 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -17,13 +18,14 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import dev.intent.checkpoint.BuildConfig
 import dev.intent.checkpoint.engine.EngineLog
 import dev.intent.checkpoint.permissions.PermissionChecker
 import dev.intent.core.AppRule
@@ -47,9 +49,10 @@ interface OverlayCallbacks {
 
 /**
  * Native overlay host (PRD §28, ADR-002): plain Views in `TYPE_APPLICATION_OVERLAY` windows.
- * Two windows at most: one focusable, full-screen "checkpoint" window whose content is swapped
- * (pause -> intention form, expiry -> extension, completion) and one non-focusable reminder pill.
+ * At most two windows: one focusable full-screen "checkpoint" window whose content is swapped
+ * (pause → intention, time's up → extension, completion), and one non-focusable reminder pill.
  *
+ * Never reads or inspects the app underneath; it only draws on top of it.
  * Thread-safe entry points: every public method may be called from any thread and hops to main.
  */
 class OverlayController(context: Context, private val callbacks: OverlayCallbacks) {
@@ -66,173 +69,224 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
     private var pauseRunnable: Runnable? = null
     private var pauseAnimator: ValueAnimator? = null
 
-    private var reminderRoot: View? = null
-    private var reminderSessionId: String? = null
-    private var reminderTicker: Runnable? = null
-    /** Session whose pill the user dragged away; it stays hidden until they leave and return. */
-    private var reminderDismissedFor: String? = null
+    private var pillRoot: FrameLayout? = null
+    private var pillParams: WindowManager.LayoutParams? = null
+    private var pillSession: Session? = null
+    private var pillWarnings = true
+    private var pillExpanded = false
+    private var pillTicker: Runnable? = null
+    /** Session whose pill the user dragged away; stays hidden until they leave and return. */
+    private var pillDismissedFor: String? = null
 
-    // --- checkpoint surfaces -----------------------------------------------------------------
+    // --- 1. pause + intention checkpoint -----------------------------------------------------
 
     fun showPause(session: Session, pauseMs: Long) = onMain {
         if (checkpointSessionId == session.id &&
             (checkpointSurface == Surface.PAUSE || checkpointSurface == Surface.FORM)
         ) {
-            return@onMain // duplicate detection while already showing: no second checkpoint
+            return@onMain // duplicate detection while already showing: never a second checkpoint
         }
-        val v = views()
+        val p = OverlayPalette.system(ctx)
+        val v = OverlayViews(ctx, p)
         val content = v.column()
-        content.addFullWidth(v.label(session.appName))
-        content.addFullWidth(v.title("Wait."), ctx.dp(16))
+        content.addWrap(v.appIcon(session.packageName, 56), ctx.dp(96))
+        content.addFull(v.text(session.appName, 15f, p.muted), ctx.dp(12))
+        content.addFull(v.title("Wait.", 34f), ctx.dp(32))
         val dot = View(ctx).apply {
-            background = rounded(v.palette.accent, ctx.dp(12).toFloat())
+            background = rounded(p.primary, ctx.dpf(12))
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        content.addView(dot, LinearLayout.LayoutParams(ctx.dp(24), ctx.dp(24)).apply { topMargin = ctx.dp(32) })
-        content.addFullWidth(v.label("One second."), ctx.dp(24))
+        content.addView(dot, LinearLayout.LayoutParams(ctx.dp(24), ctx.dp(24)).apply { topMargin = ctx.dp(40) })
+        content.addFull(v.text("One second.", 15f, p.muted), ctx.dp(32))
 
-        if (!setCheckpoint(session.id, Surface.PAUSE, content) { callbacks.onNotNow(session.id) }) return@onMain
-
+        if (!setCheckpoint(session.id, Surface.PAUSE, p, content, footer = null) { callbacks.onNotNow(session.id) }) {
+            return@onMain
+        }
         val reduced = ctx.reducedMotion()
-        val duration = if (reduced) REDUCED_MOTION_PAUSE_MS else pauseMs
-        if (!reduced) {
+        if (reduced) {
+            content.alpha = 0f
+            content.animate().alpha(1f).setDuration(REDUCED_MOTION_PAUSE_MS).start()
+        } else {
             pauseAnimator = ObjectAnimator.ofFloat(dot, View.SCALE_X, 1f, 1.6f).apply {
-                this.duration = 900
+                duration = 900
                 repeatMode = ValueAnimator.REVERSE
                 repeatCount = ValueAnimator.INFINITE
                 addUpdateListener { dot.scaleY = dot.scaleX }
                 start()
             }
-        } else {
-            content.alpha = 0f
-            content.animate().alpha(1f).setDuration(REDUCED_MOTION_PAUSE_MS).start()
         }
-        pauseRunnable = Runnable { callbacks.onPauseElapsed(session.id) }.also { main.postDelayed(it, duration) }
+        val wait = if (reduced) REDUCED_MOTION_PAUSE_MS else pauseMs
+        pauseRunnable = Runnable { callbacks.onPauseElapsed(session.id) }.also { main.postDelayed(it, wait) }
     }
 
-    fun showIntentionForm(session: Session, rule: AppRule) = onMain {
+    fun showIntentionForm(session: Session, rule: AppRule, recentIntentions: List<String>) = onMain {
         if (checkpointSessionId == session.id && checkpointSurface == Surface.FORM) return@onMain // keep typed text
-        val v = views()
+        val p = OverlayPalette.system(ctx)
+        val v = OverlayViews(ctx, p)
         val content = v.column()
-        content.addFullWidth(v.label(session.appName))
-        content.addFullWidth(v.title("Wait."), ctx.dp(8))
-        content.addFullWidth(v.body("Why are you opening ${session.appName}?"), ctx.dp(24))
+        content.addWrap(v.appIcon(session.packageName, 48), ctx.dp(24))
+        content.addFull(v.text(session.appName, 15f, p.muted), ctx.dp(8))
+        content.addFull(v.title("Why are you here?"), ctx.dp(16))
 
-        val input = v.input("What are you here to do?", MAX_INTENTION_CHARS)
-        content.addFullWidth(input, ctx.dp(16))
+        val (inputBox, input) = v.input("What do you want to do?", MAX_INTENTION_CHARS, withClear = true)
+        content.addFull(inputBox, ctx.dp(24))
 
-        val suggestions = v.flow()
+        fun fill(text: String) {
+            input.setText(text)
+            input.setSelection(text.length)
+        }
+
+        if (recentIntentions.isNotEmpty()) {
+            content.addFull(v.label("Recent"), ctx.dp(24))
+            val recent = v.flow()
+            for (r in recentIntentions.take(3)) recent.addView(v.chip(r, "Recent: $r") { fill(r) })
+            content.addFull(recent, ctx.dp(8))
+        }
+
+        content.addFull(v.label("Quick picks"), ctx.dp(if (recentIntentions.isEmpty()) 24 else 16))
+        val picks = v.flow()
         for (s in SUGGESTIONS) {
-            suggestions.addView(
+            picks.addView(
                 v.chip(s) {
                     if (s == OTHER) {
                         input.setText("")
                         input.requestFocus()
+                        showKeyboard(input)
                     } else {
-                        input.setText(s)
-                        input.setSelection(s.length)
+                        fill(s)
                     }
                 },
             )
         }
-        content.addFullWidth(suggestions, ctx.dp(12))
+        content.addFull(picks, ctx.dp(8))
 
         var selectedSeconds: Long? = rule.defaultTimerSeconds
         var customSelected = false
-        val custom = v.numberInput("Minutes").apply { visibility = View.GONE }
+        val (customBox, custom) = v.numberInput("Minutes")
+        customBox.visibility = View.GONE
         if (rule.timerEnabled) {
-            content.addFullWidth(v.body("How long do you need?", 16f), ctx.dp(24))
+            content.addFull(v.label("How long do you plan to be here?"), ctx.dp(24))
             val durations = v.flow()
             val chips = mutableListOf<Button>()
             fun select(chip: Button, seconds: Long?, isCustom: Boolean) {
                 chips.forEach { v.setChipSelected(it, it === chip) }
                 selectedSeconds = seconds
                 customSelected = isCustom
-                custom.visibility = if (isCustom) View.VISIBLE else View.GONE
-                if (isCustom) custom.requestFocus()
-            }
-            for ((label, seconds) in DURATIONS) {
-                val chip = v.chip(label, if (seconds == null) "No timer" else "$label timer") {
-                    select(it, seconds, isCustom = false)
+                customBox.visibility = if (isCustom) View.VISIBLE else View.GONE
+                if (isCustom) {
+                    custom.requestFocus()
+                    showKeyboard(custom)
                 }
+            }
+            val options = if (BuildConfig.DEBUG) listOf("2m" to 120L) + DURATIONS else DURATIONS
+            var preselected = false
+            for ((label, seconds) in options) {
+                val chip = v.chip(label, if (seconds == null) "No timer" else "$label timer") { select(it, seconds, false) }
                 chips += chip
                 durations.addView(chip)
-                if (seconds == rule.defaultTimerSeconds) v.setChipSelected(chip, true)
+                if (seconds == rule.defaultTimerSeconds && !preselected) {
+                    v.setChipSelected(chip, true)
+                    preselected = true
+                }
             }
             if (rule.customTimerAllowed) {
-                val chip = v.chip("Custom", "Custom duration") { select(it, null, isCustom = true) }
+                val chip = v.chip("Custom", "Custom duration") { select(it, null, true) }
                 chips += chip
                 durations.addView(chip)
+                if (!preselected) {
+                    // Default isn't one of the chips (edited rule): show it as the custom value.
+                    select(chip, null, true)
+                    custom.setText((rule.defaultTimerSeconds / 60).toString())
+                    customBox.visibility = View.VISIBLE
+                    input.requestFocus()
+                }
             }
-            content.addFullWidth(durations, ctx.dp(12))
-            content.addFullWidth(custom, ctx.dp(8))
+            content.addFull(durations, ctx.dp(8))
+            content.addFull(customBox, ctx.dp(8))
         } else {
             selectedSeconds = null
         }
 
         val submit = {
-            val seconds = if (customSelected) custom.text.toString().toLongOrNull()?.takeIf { it > 0 }?.times(60) else selectedSeconds
-            if (customSelected && seconds == null) {
-                custom.error = "Enter minutes"
+            val seconds = if (customSelected) {
+                custom.text.toString().toLongOrNull()?.takeIf { it in 1..720 }?.times(60)
             } else {
+                selectedSeconds
+            }
+            if (customSelected && seconds == null) {
+                custom.error = "Enter 1–720 minutes"
+            } else {
+                hideKeyboard(input)
                 callbacks.onSubmitIntention(session.id, input.text.toString(), seconds)
             }
         }
         input.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
-                input.clearFocus()
                 hideKeyboard(input)
+                input.clearFocus()
                 true
             } else {
                 false
             }
         }
-        content.addFullWidth(v.primary("Continue") { submit() }, ctx.dp(28))
-        content.addFullWidth(v.textButton("Not now") { callbacks.onNotNow(session.id) }, ctx.dp(4))
 
-        setCheckpoint(session.id, Surface.FORM, content) { callbacks.onNotNow(session.id) }
+        // Pinned footer: Continue stays above the keyboard (the window pads for the IME inset).
+        val footer = v.column()
+        footer.addFull(v.primary("Continue") { submit() })
+        footer.addFull(v.textButton("Not now") { callbacks.onNotNow(session.id) }, ctx.dp(4))
+
+        setCheckpoint(session.id, Surface.FORM, p, content, footer) { callbacks.onNotNow(session.id) }
     }
 
+    // --- 3. time's up + extension ------------------------------------------------------------
+
     fun showExpired(session: Session, extensionAllowed: Boolean) = onMain {
-        hideReminderNow()
+        hidePillNow()
         if (session.state == SessionState.EXTENSION_REQUEST) {
             showExtensionForm(session)
             return@onMain
         }
         if (checkpointSessionId == session.id && checkpointSurface == Surface.EXPIRED) return@onMain
-        val v = views()
+        val p = OverlayPalette.DARK
+        val v = OverlayViews(ctx, p)
         val content = v.column()
-        content.addFullWidth(v.title("Time's up"))
-        content.addFullWidth(v.label("You opened ${session.appName} to:"), ctx.dp(24))
-        content.addFullWidth(v.body("“${session.intention}”", 22f), ctx.dp(8))
+        content.addWrap(v.appIcon(session.packageName, 48), ctx.dp(72))
+        content.addFull(v.text(session.appName, 15f, p.muted), ctx.dp(8))
+        content.addFull(v.title("Time's up", 34f), ctx.dp(24))
+        content.addFull(v.text("“${session.intention}”", 22f, bold = true), ctx.dp(16))
         val planned = session.plannedDurationSeconds
         if (planned != null) {
-            val line = if (session.extensionCount > 0 && session.startedAt != null) {
-                val here = (System.currentTimeMillis() - session.startedAt!!) / 1000
+            val line = if (session.extensionCount > 0) {
+                val here = session.elapsedMs(System.currentTimeMillis()) / 1000
                 "You planned ${formatMinutes(planned)}. You've been here for ${formatMinutes(here)}."
             } else {
                 "You planned ${formatMinutes(planned)}."
             }
-            content.addFullWidth(v.label(line), ctx.dp(16))
+            content.addFull(v.text(line, 16f, p.muted), ctx.dp(24))
         }
-        content.addFullWidth(v.body("Still doing what you came here to do?", 16f), ctx.dp(24))
-        content.addFullWidth(v.primary("Yes — I'm done") { callbacks.onDone(session.id) }, ctx.dp(24))
+        content.addFull(v.text("Still doing what you came here to do?", 16f), ctx.dp(8))
+
+        val footer = v.column()
+        footer.addFull(v.primary("I'm done") { callbacks.onDone(session.id) })
         if (extensionAllowed) {
-            content.addFullWidth(v.secondary("I need more time") { callbacks.onBeginExtension(session.id) }, ctx.dp(12))
+            footer.addFull(v.outlined("Need more time") { callbacks.onBeginExtension(session.id) }, ctx.dp(12))
         }
-        content.addFullWidth(v.textButton("Leave ${session.appName}") { callbacks.onEnd(session.id) }, ctx.dp(8))
+        footer.addFull(v.textButton("Go home") { callbacks.onEnd(session.id) }, ctx.dp(4))
         // Back = "need more time, no request": short snooze, never a silent reset (PRD §15.8).
-        setCheckpoint(session.id, Surface.EXPIRED, content) { callbacks.onSnoozeExpired(session.id) }
+        setCheckpoint(session.id, Surface.EXPIRED, p, content, footer) { callbacks.onSnoozeExpired(session.id) }
     }
 
     private fun showExtensionForm(session: Session) {
         if (checkpointSessionId == session.id && checkpointSurface == Surface.EXTENSION) return
-        val v = views()
+        val p = OverlayPalette.DARK
+        val v = OverlayViews(ctx, p)
         val content = v.column()
-        content.addFullWidth(v.title("Need more time?"))
-        content.addFullWidth(v.label("You came here to: “${session.intention}”"), ctx.dp(16))
-        val reason = v.input("What's left? (optional)", MAX_INTENTION_CHARS)
-        content.addFullWidth(reason, ctx.dp(24))
+        content.addWrap(v.appIcon(session.packageName, 48), ctx.dp(72))
+        content.addFull(v.title("Need more time?", 30f), ctx.dp(24))
+        content.addFull(v.text("You came here to: “${session.intention}”", 16f, p.muted), ctx.dp(12))
+        val (reasonBox, reason) = v.input("What's left? (optional)", MAX_INTENTION_CHARS, withClear = true)
+        content.addFull(reasonBox, ctx.dp(32))
+        content.addFull(v.label("How much longer?"), ctx.dp(24))
         val chips = mutableListOf<Button>()
         var extra = EXTENSIONS.first().second
         val row = v.flow()
@@ -245,135 +299,271 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
             row.addView(chip)
         }
         v.setChipSelected(chips.first(), true)
-        content.addFullWidth(row, ctx.dp(16))
-        content.addFullWidth(
-            v.primary("Continue") { callbacks.onRequestExtension(session.id, reason.text.toString(), extra) },
-            ctx.dp(28),
+        content.addFull(row, ctx.dp(8))
+
+        val footer = v.column()
+        footer.addFull(
+            v.primary("Continue") {
+                hideKeyboard(reason)
+                callbacks.onRequestExtension(session.id, reason.text.toString(), extra)
+            },
         )
-        setCheckpoint(session.id, Surface.EXTENSION, content) { callbacks.onCancelExtension(session.id) }
+        footer.addFull(v.textButton("Back") { callbacks.onCancelExtension(session.id) }, ctx.dp(4))
+        setCheckpoint(session.id, Surface.EXTENSION, p, content, footer) { callbacks.onCancelExtension(session.id) }
     }
 
+    // --- 4. session complete -----------------------------------------------------------------
+
     fun showCompletion(session: Session) = onMain {
-        hideReminderNow()
-        val v = views()
+        hidePillNow()
+        val p = OverlayPalette.DARK
+        val v = OverlayViews(ctx, p)
         val content = v.column()
-        content.addFullWidth(v.title("Done for now?"))
-        content.addFullWidth(v.body("“${session.intention}”", 20f), ctx.dp(16))
-        session.wallClockSeconds?.let {
-            content.addFullWidth(v.label("You were here for ${formatMinutes(it)}."), ctx.dp(8))
+        content.addWrap(v.appIcon(session.packageName, 48), ctx.dp(72))
+        content.addFull(v.title("Done for now?", 30f), ctx.dp(24))
+        content.addFull(v.text("“${session.intention}”", 20f), ctx.dp(12))
+
+        val actual = session.foregroundMs / 1000
+        val planned = session.plannedDurationSeconds
+        val summary = if (planned != null) {
+            "${shortMinutes(actual)} actual · ${shortMinutes(planned)} planned"
+        } else {
+            "${shortMinutes(actual)} actual · no timer"
         }
-        content.addFullWidth(v.primary("Leave ${session.appName}") { goHome() }, ctx.dp(32))
-        content.addFullWidth(v.secondary("Stay without a session") { hideCheckpointNow() }, ctx.dp(12))
-        setCheckpoint(session.id, Surface.COMPLETION, content) { hideCheckpointNow() }
+        content.addFull(v.text(summary, 16f), ctx.dp(24))
+        if (planned != null && planned > 0) {
+            val scale = maxOf(actual, planned).toFloat()
+            content.addFull(bar(v, "Actual time", actual, actual / scale, p.primary), ctx.dp(24))
+            content.addFull(bar(v, "Planned time", planned, planned / scale, p.muted), ctx.dp(12))
+        }
+
+        val footer = v.column()
+        footer.addFull(v.primary("Go home") { goHome() })
+        // Ends this opening: no pill, no new checkpoint until the user leaves and opens it again.
+        footer.addFull(v.outlined("Stay without a session") { hideCheckpointNow() }, ctx.dp(12))
+        setCheckpoint(session.id, Surface.COMPLETION, p, content, footer) { hideCheckpointNow() }
+    }
+
+    private fun bar(v: OverlayViews, label: String, seconds: Long, fraction: Float, color: Int): View {
+        val row = v.row()
+        row.contentDescription = "$label ${formatMinutes(seconds)}"
+        row.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        val name = v.text(label, 14f, v.p.muted, center = false)
+        name.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        row.addView(name, LinearLayout.LayoutParams(ctx.dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val track = FrameLayout(ctx).apply { background = rounded(v.p.border, ctx.dpf(5)) }
+        val fill = View(ctx).apply { background = rounded(color, ctx.dpf(5)) }
+        track.addView(fill, FrameLayout.LayoutParams(0, ctx.dp(10)))
+        track.addOnLayoutChangeListener { t, _, _, _, _, _, _, _, _ ->
+            val w = (t.width * fraction.coerceIn(0.02f, 1f)).toInt()
+            if (fill.layoutParams.width != w) {
+                fill.layoutParams = FrameLayout.LayoutParams(w, ctx.dp(10))
+            }
+        }
+        row.addView(track, LinearLayout.LayoutParams(0, ctx.dp(10), 1f))
+        val value = v.text(shortMinutes(seconds), 14f, v.p.text, center = false)
+        value.gravity = Gravity.END
+        value.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        row.addView(value, LinearLayout.LayoutParams(ctx.dp(64), ViewGroup.LayoutParams.WRAP_CONTENT))
+        return row
     }
 
     fun hideCheckpoint() = onMain { hideCheckpointNow() }
 
-    // --- reminder pill -----------------------------------------------------------------------
+    // --- 2. floating reminder ----------------------------------------------------------------
 
     fun showReminder(session: Session, warningsEnabled: Boolean) = onMain {
-        if (reminderDismissedFor == session.id && reminderSessionId == null) return@onMain
-        hideReminderNow()
+        if (pillDismissedFor == session.id && pillRoot == null) return@onMain
         if (!PermissionChecker.canDrawOverlays(ctx)) return@onMain
-        val v = views()
-        val p = v.palette
-        val pill = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            background = rounded(p.surface, ctx.dp(22).toFloat())
-            elevation = ctx.dp(6).toFloat()
-            setPadding(ctx.dp(16), ctx.dp(10), ctx.dp(16), ctx.dp(10))
-            minimumHeight = ctx.dp(48)
-        }
-        val line = TextView(ctx).apply {
-            setTextColor(p.text)
-            textSize = 15f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            maxWidth = ctx.dp(260)
-        }
-        val actions = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-        }
-        actions.addView(v.chip("Done") { callbacks.onDone(session.id) })
-        actions.addView(
-            v.chip("End") { callbacks.onEnd(session.id) },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = ctx.dp(8)
-            },
-        )
-        pill.addView(line)
-        pill.addView(actions)
-
-        val params = WindowManager.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = ctx.dp(16)
-            y = ctx.dp(96)
-        }
-
-        pill.setOnTouchListener(DragToDismiss(params, onTap = {
-            actions.visibility = if (actions.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        }, onDismiss = {
-            reminderDismissedFor = session.id
-            hideReminderNow()
-        }))
-
-        if (!addWindow(pill, params)) return@onMain
-        reminderRoot = pill
-        reminderSessionId = session.id
-        reminderDismissedFor = null
-
-        val tick = object : Runnable {
-            override fun run() {
-                val now = System.currentTimeMillis()
-                val remaining = session.remainingMs(now)
-                line.text = if (remaining == null) session.intention else "${session.intention} · ${formatClock(remaining)}"
-                pill.contentDescription = if (remaining == null) {
-                    "Intention: ${session.intention}. Tap for options."
-                } else {
-                    "Intention: ${session.intention}. ${formatClock(remaining)} remaining. Tap for options."
-                }
-                val level = if (warningsEnabled) session.warningLevel(now) else WarningLevel.NONE
-                line.setTextColor(if (level == WarningLevel.NONE) p.text else p.warn)
-                if (level == WarningLevel.THIRTY_SECONDS && !ctx.reducedMotion()) {
-                    pill.alpha = if (pill.alpha < 1f) 1f else 0.85f // gentle pulse, no popup
-                } else {
-                    pill.alpha = 1f
-                }
-                main.postDelayed(this, 1_000)
+        pillSession = session
+        pillWarnings = warningsEnabled
+        if (pillRoot == null) {
+            pillExpanded = false
+            val root = FrameLayout(ctx)
+            val params = WindowManager.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                x = 0
+                y = ctx.dp(72)
+                title = "IntentReminder"
             }
+            root.setOnTouchListener(DragToDismiss(params))
+            if (!addWindow(root, params)) return@onMain
+            pillRoot = root
+            pillParams = params
+            pillDismissedFor = null
         }
-        reminderTicker = tick
-        tick.run()
+        renderPill()
+        startPillTicker()
     }
 
     fun hideReminder() = onMain {
         // Leaving the app resets the "dragged away" choice: the pill comes back on return.
-        reminderDismissedFor = null
-        hideReminderNow()
+        pillDismissedFor = null
+        hidePillNow()
     }
 
     fun hideAll() = onMain {
         hideCheckpointNow()
-        reminderDismissedFor = null
-        hideReminderNow()
+        pillDismissedFor = null
+        hidePillNow()
     }
 
+    // Refs into the rendered pill, so the 1 s tick only updates text (never rebuilds under a finger).
+    private var pillTimeView: TextView? = null
+    private var pillCard: View? = null
+    private var pillRenderedWarning = false
+
     /**
-     * "Leave app" as far as Android allows a third-party app: bring the launcher to front. We never
+     * Rebuilds the pill for the current state. One state at a time: collapsed OR expanded. Called
+     * on show, on tap, and when the warning threshold is crossed; the ticker handles the rest.
+     */
+    private fun renderPill() {
+        val root = pillRoot ?: return
+        val session = pillSession ?: return
+        val now = System.currentTimeMillis()
+        val p = OverlayPalette.DARK
+        val v = OverlayViews(ctx, p)
+        val warning = isWarning(session, now)
+        pillRenderedWarning = warning
+
+        root.removeAllViews()
+        val card = v.column(Gravity.START).apply {
+            background = rounded(
+                if (warning) OverlayPalette.PILL_WARNING_BG else p.background,
+                ctx.dpf(if (pillExpanded) 20 else 26),
+                p.border,
+                ctx.dp(1),
+            )
+            elevation = ctx.dpf(2)
+            setPadding(ctx.dp(8), ctx.dp(8), ctx.dp(8), ctx.dp(8))
+            minimumHeight = ctx.dp(48)
+        }
+
+        val header = v.row()
+        header.addView(v.appIcon(session.packageName, 32))
+        val texts = v.column(Gravity.START)
+        val intention = TextView(ctx).apply {
+            setTextColor(p.text)
+            textSize = 15f
+            if (pillExpanded) maxLines = 3 else setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            maxWidth = ctx.dp(if (pillExpanded) 220 else 180)
+            text = session.intention
+        }
+        val timeView = TextView(ctx).apply {
+            setTextColor(if (warning) p.amber else p.text)
+            textSize = if (pillExpanded) 13f else 15f
+        }
+        if (pillExpanded) {
+            texts.addView(intention)
+            texts.addView(timeView)
+        } else {
+            val one = v.row()
+            one.addView(intention)
+            one.addView(TextView(ctx).apply { text = " · "; setTextColor(p.muted); textSize = 15f })
+            one.addView(timeView)
+            texts.addView(one)
+        }
+        if (warning) {
+            texts.addView(TextView(ctx).apply { text = "Time's almost up"; setTextColor(p.amber); textSize = 12f })
+        }
+        header.addView(
+            texts,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = ctx.dp(10)
+                marginEnd = ctx.dp(4)
+            },
+        )
+        header.addView(ChevronView(ctx, p.muted, up = pillExpanded), LinearLayout.LayoutParams(ctx.dp(32), ctx.dp(32)))
+        card.addView(header)
+
+        if (pillExpanded) {
+            val actions = v.row()
+            actions.addView(
+                v.primary("Done") { callbacks.onDone(session.id) },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            actions.addView(
+                v.outlined("End") { callbacks.onEnd(session.id) },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = ctx.dp(8) },
+            )
+            card.addView(
+                actions,
+                LinearLayout.LayoutParams(ctx.dp(280), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = ctx.dp(12) },
+            )
+        }
+
+        root.addView(
+            card,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(ctx.dp(4), ctx.dp(4), ctx.dp(4), ctx.dp(4)) // room for the thin shadow
+            },
+        )
+        pillCard = card
+        pillTimeView = timeView
+        updatePillTime(now)
+        pillParams?.let { params -> runCatching { wm.updateViewLayout(root, params) } }
+    }
+
+    private fun isWarning(session: Session, now: Long): Boolean =
+        pillWarnings && session.warningLevel(now) != WarningLevel.NONE
+
+    private fun updatePillTime(now: Long) {
+        val session = pillSession ?: return
+        val remaining = session.remainingMs(now)
+        val time = if (remaining != null) formatClock(remaining) else "+" + formatElapsed(session.elapsedMs(now))
+        pillTimeView?.text = if (!pillExpanded) {
+            time
+        } else {
+            buildString {
+                append(if (remaining != null) "$time remaining" else "${time.drop(1)} elapsed")
+                session.plannedDurationSeconds?.let { append(" · ${it / 60} min planned") }
+            }
+        }
+        val spoken = if (remaining != null) "${formatClock(remaining)} remaining" else "${formatElapsed(session.elapsedMs(now))} elapsed"
+        pillCard?.contentDescription = "Intention: ${session.intention}. $spoken. " +
+            if (pillExpanded) "Double tap to collapse." else "Double tap for options. Drag off the edge to hide."
+        // Gentle 30 s pulse via alpha only; skipped with reduced motion.
+        pillCard?.alpha = if (pillWarnings && session.warningLevel(now) == WarningLevel.THIRTY_SECONDS &&
+            !ctx.reducedMotion() && (now / 1000) % 2 == 0L
+        ) {
+            0.88f
+        } else {
+            1f
+        }
+    }
+
+    private fun startPillTicker() {
+        pillTicker?.let(main::removeCallbacks)
+        val tick = object : Runnable {
+            override fun run() {
+                val session = pillSession ?: return
+                val now = System.currentTimeMillis()
+                if (isWarning(session, now) != pillRenderedWarning) renderPill() else updatePillTime(now)
+                main.postDelayed(this, 1_000)
+            }
+        }
+        pillTicker = tick
+        main.postDelayed(tick, 1_000)
+    }
+
+    // --- navigation --------------------------------------------------------------------------
+
+    /**
+     * "Go home" as far as Android allows a third-party app: bring the launcher to front. We never
      * claim the target app was closed (PRD §15.10). Background-activity-start is permitted because
      * we hold SYSTEM_ALERT_WINDOW.
      */
     fun goHome() = onMain {
         hideCheckpointNow()
-        hideReminderNow()
+        hidePillNow()
         try {
             ctx.startActivity(
                 Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -386,37 +576,47 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
 
     // --- window plumbing ---------------------------------------------------------------------
 
-    /** Returns false if the window could not be shown; the engine keeps its state either way. */
-    private fun setCheckpoint(sessionId: String, surface: Surface, content: LinearLayout, onBack: () -> Unit): Boolean {
+    /**
+     * Full-screen checkpoint window: scrollable [content] with an optional pinned [footer].
+     * Returns false if the window could not be shown; the engine keeps its state either way.
+     */
+    private fun setCheckpoint(
+        sessionId: String,
+        surface: Surface,
+        p: OverlayPalette,
+        content: LinearLayout,
+        footer: LinearLayout?,
+        onBack: () -> Unit,
+    ): Boolean {
         if (!PermissionChecker.canDrawOverlays(ctx)) return false
         // Never draw over the lock screen / credential UI (PRD §39).
         if (ctx.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) return false
 
         hideCheckpointNow()
-        val palette = OverlayPalette(ctx)
         val root = BackAwareFrame(ctx, onBack).apply {
-            setBackgroundColor(palette.scrim)
+            setBackgroundColor(p.background)
             // Tapjacking guard: ignore taps while another app's window obscures ours.
             filterTouchesWhenObscured = true
             isFocusableInTouchMode = true
+        }
+        val maxWidth = minOf(ctx.resources.displayMetrics.widthPixels, ctx.dp(520))
+        val column = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
         }
         val scroll = ScrollView(ctx).apply {
             isFillViewport = true
             clipToPadding = false
         }
-        val wrapper = FrameLayout(ctx)
-        content.setPadding(ctx.dp(24), ctx.dp(24), ctx.dp(24), ctx.dp(24))
-        wrapper.addView(
-            content,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER,
-            ).apply { width = minOf(ctx.resources.displayMetrics.widthPixels, ctx.dp(520)) },
-        )
-        scroll.addView(wrapper, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        applySystemInsets(root, scroll)
+        content.setPadding(ctx.dp(20), ctx.dp(8), ctx.dp(20), ctx.dp(24))
+        scroll.addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        column.addView(scroll, LinearLayout.LayoutParams(maxWidth, 0, 1f))
+        if (footer != null) {
+            footer.setPadding(ctx.dp(20), ctx.dp(8), ctx.dp(20), ctx.dp(16))
+            column.addView(footer, LinearLayout.LayoutParams(maxWidth, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        root.addView(column, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        applySystemInsets(root, column)
 
         val params = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -424,7 +624,7 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             // Focusable (no FLAG_NOT_FOCUSABLE) so the text field gets the IME and back reaches us.
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT,
+            PixelFormat.OPAQUE,
         ).apply {
             // Deprecated on 30+, where the IME inset listener below does the work; still needed <30.
             @Suppress("DEPRECATION")
@@ -444,7 +644,7 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
     }
 
     /**
-     * Pads for status/nav bars, cutouts and the IME so the text field is never covered by the
+     * Pads for status/nav bars, cutouts and the IME so the pinned footer is never covered by the
      * keyboard (PRD §28), including on API 30+ where ADJUST_RESIZE alone is unreliable for
      * overlay windows.
      */
@@ -482,7 +682,7 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
         if (view == null) return
         try {
             wm.removeViewImmediate(view)
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             // Already detached (e.g. system removed it when the permission was revoked).
         }
     }
@@ -499,34 +699,35 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
         checkpointSurface = null
     }
 
-    private fun hideReminderNow() {
-        reminderTicker?.let(main::removeCallbacks)
-        reminderTicker = null
-        removeWindow(reminderRoot)
-        reminderRoot = null
-        reminderSessionId = null
+    private fun hidePillNow() {
+        pillTicker?.let(main::removeCallbacks)
+        pillTicker = null
+        removeWindow(pillRoot)
+        pillRoot = null
+        pillParams = null
+        pillSession = null
+        pillExpanded = false
+        pillTimeView = null
+        pillCard = null
+    }
+
+    private fun showKeyboard(view: View) {
+        view.post { ctx.getSystemService(InputMethodManager::class.java)?.showSoftInput(view, 0) }
     }
 
     private fun hideKeyboard(view: View) {
-        ctx.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
-            ?.hideSoftInputFromWindow(view.windowToken, 0)
+        ctx.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(view.windowToken, 0)
     }
-
-    private fun views() = OverlayViews(ctx, OverlayPalette(ctx))
 
     private fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
 
     /**
-     * Drag the pill anywhere; fling it past a screen edge to hide it for this visit. Hiding never
-     * ends the session (PRD §15.4). A short press with no movement toggles the actions.
+     * Drag the pill anywhere; drag it past a side edge to hide it for this visit. Hiding never
+     * ends the session (PRD §15.4). A tap with no movement toggles collapsed/expanded.
      */
-    private inner class DragToDismiss(
-        private val params: WindowManager.LayoutParams,
-        private val onTap: () -> Unit,
-        private val onDismiss: () -> Unit,
-    ) : View.OnTouchListener {
+    private inner class DragToDismiss(private val params: WindowManager.LayoutParams) : View.OnTouchListener {
         private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
         private var downRawX = 0f
         private var downRawY = 0f
@@ -552,25 +753,26 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
                     if (dragging) {
                         params.x = startX + dx.toInt()
                         params.y = (startY + dy.toInt()).coerceAtLeast(0)
-                        try {
-                            wm.updateViewLayout(v, params)
-                        } catch (_: IllegalArgumentException) {
-                        }
+                        runCatching { wm.updateViewLayout(v, params) }
                     }
-                    return dragging
+                    return true
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!dragging) {
                         v.performClick()
-                        onTap()
+                        pillExpanded = !pillExpanded
+                        renderPill()
                         return true
                     }
-                    val screenW = ctx.resources.displayMetrics.widthPixels
-                    val offLeft = params.x < -v.width / 2
-                    val offRight = params.x + v.width / 2 > screenW
-                    if (offLeft || offRight) onDismiss()
+                    // Gravity is CENTER_HORIZONTAL, so x is the offset from screen centre.
+                    val half = ctx.resources.displayMetrics.widthPixels / 2
+                    if (abs(params.x) > half - v.width / 4) {
+                        pillDismissedFor = pillSession?.id
+                        hidePillNow()
+                    }
                     return true
                 }
+                MotionEvent.ACTION_CANCEL -> return true
             }
             return false
         }
@@ -579,7 +781,6 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
     private companion object {
         const val REDUCED_MOTION_PAUSE_MS = 300L
         const val MAX_INTENTION_CHARS = 200
-
         const val OTHER = "Other"
 
         val SUGGESTIONS = listOf(
@@ -591,9 +792,7 @@ class OverlayController(context: Context, private val callbacks: OverlayCallback
             OTHER,
         )
 
-        /** "2m" is the Phase 0 test duration (P0-010); drop it before Phase 3 ships. */
         val DURATIONS: List<Pair<String, Long?>> = listOf(
-            "2m" to 120L,
             "5m" to 300L,
             "10m" to 600L,
             "15m" to 900L,

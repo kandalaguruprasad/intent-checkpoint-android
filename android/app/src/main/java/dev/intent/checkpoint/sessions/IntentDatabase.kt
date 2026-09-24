@@ -70,7 +70,9 @@ class IntentDatabase(context: Context) :
               completion_reason TEXT,
               backgrounded_at INTEGER,
               created_at INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL
+              updated_at INTEGER NOT NULL,
+              foreground_ms INTEGER NOT NULL DEFAULT 0,
+              active_since INTEGER
             )
             """,
         )
@@ -113,54 +115,38 @@ class IntentDatabase(context: Context) :
             )
             """,
         )
-        seedPocMonitoredApps(db)
+        // Monitored apps are chosen in onboarding (Choose Apps); nothing is seeded.
     }
 
+    /** One explicit step per version. Never drop user history silently (PRD §33, §41). */
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // No released versions yet. Every future bump adds an explicit step here; never drop
-        // user history silently (PRD §33, §41).
-    }
-
-    /** P0-008: Instagram is the single hardcoded monitored package for the POC. */
-    private fun seedPocMonitoredApps(db: SQLiteDatabase) {
-        val now = System.currentTimeMillis()
-        for ((pkg, name) in POC_MONITORED_APPS) {
-            db.insertOrThrow(
-                "monitored_apps",
-                null,
-                ContentValues().apply {
-                    put("package_name", pkg)
-                    put("app_name", name)
-                    put("category", "social")
-                    put("added_at", now)
-                    put("monitoring_enabled", 1)
-                },
-            )
-            val rule = AppRule(pkg, name)
-            db.insertOrThrow(
-                "app_rules",
-                null,
-                ContentValues().apply {
-                    put("package_name", pkg)
-                    put("ask_intention", rule.askIntention.toInt())
-                    put("pause_duration_ms", rule.pauseDurationMs)
-                    put("timer_enabled", rule.timerEnabled.toInt())
-                    put("default_timer_seconds", rule.defaultTimerSeconds)
-                    put("custom_timer_allowed", rule.customTimerAllowed.toInt())
-                    put("floating_reminder_enabled", rule.floatingReminderEnabled.toInt())
-                    put("warnings_enabled", rule.warningsEnabled.toInt())
-                    put("extension_allowed", rule.extensionAllowed.toInt())
-                    put("reentry_grace_seconds", rule.reentryGraceSeconds)
-                },
-            )
+        if (oldVersion < 2) {
+            // v2: actual foreground time per session (Session Complete, Today).
+            db.execSQL("ALTER TABLE sessions ADD COLUMN foreground_ms INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE sessions ADD COLUMN active_since INTEGER")
         }
     }
 
     companion object {
         const val NAME = "intent.db"
-        const val VERSION = 1
+        const val VERSION = 2
 
-        val POC_MONITORED_APPS = linkedMapOf("com.instagram.android" to "Instagram")
+        /** Rule row for a newly monitored app, with the shipped defaults (PRD §15.1). */
+        fun defaultRuleValues(packageName: String): ContentValues {
+            val rule = AppRule(packageName, packageName)
+            return ContentValues().apply {
+                put("package_name", packageName)
+                put("ask_intention", rule.askIntention.toInt())
+                put("pause_duration_ms", rule.pauseDurationMs)
+                put("timer_enabled", rule.timerEnabled.toInt())
+                put("default_timer_seconds", rule.defaultTimerSeconds)
+                put("custom_timer_allowed", rule.customTimerAllowed.toInt())
+                put("floating_reminder_enabled", rule.floatingReminderEnabled.toInt())
+                put("warnings_enabled", rule.warningsEnabled.toInt())
+                put("extension_allowed", rule.extensionAllowed.toInt())
+                put("reentry_grace_seconds", rule.reentryGraceSeconds)
+            }
+        }
     }
 }
 

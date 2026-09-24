@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Debug builds only (never merged into release). Lets CI / adb seed state for the emulator
+          screenshot run. Exported but gated by DUMP, which the adb shell holds and third-party
+          apps cannot get.
+        -->
+        <receiver
+            android:name=".debug.DebugCommandReceiver"
+            android:process=":engine"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="dev.intent.checkpoint.DEBUG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

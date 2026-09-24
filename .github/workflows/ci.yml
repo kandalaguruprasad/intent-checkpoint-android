@@ -59,3 +59,52 @@ jobs:
           name: app-debug-x86_64
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 7
+
+  emulator:
+    name: Emulator run (real build, screenshots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      # Debug build with the JS bundled in (runs without Metro) and the debug-only test receiver.
+      - run: ./gradlew assembleDebug -PreactNativeArchitectures=x86_64 -PbundleJsInDebug --console=plain
+        working-directory: android
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run on emulator (API 34)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash scripts/ci/emulator-run.sh
+      - name: Contact sheet
+        if: always()
+        run: |
+          cd emulator-output && ls *.png >/dev/null 2>&1 || exit 0
+          montage -label '%t' -pointsize 28 -geometry 360x+12+12 -tile 6x *.png ../contact-sheet.jpg || true
+          cat steps.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-screenshots
+          path: |
+            emulator-output/
+            contact-sheet.jpg
+          retention-days: 14

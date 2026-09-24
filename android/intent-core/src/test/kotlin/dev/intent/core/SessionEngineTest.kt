@@ -528,4 +528,66 @@ class SessionEngineTest {
         assertEquals(WarningLevel.TWO_MINUTES, s.warningLevel(s.plannedEndAt!! - 120_000))
         assertEquals(WarningLevel.THIRTY_SECONDS, s.warningLevel(s.plannedEndAt!! - 30_000))
     }
+
+    // --- actual foreground time --------------------------------------------------------------
+
+    @Test
+    fun `foreground time counts only in-front intervals`() {
+        val s = startActiveSession()
+        clock.advanceSeconds(60)
+        engine.onForegroundChanged(wa) // 60 s in front
+        clock.advanceSeconds(90) // away, not counted
+        engine.onForegroundChanged(ig)
+        clock.advanceSeconds(30) // 30 s in front
+        engine.complete(s.id, CompletionReason.DONE)
+        val done = only()
+        assertEquals(90_000, done.foregroundMs)
+        assertNull(done.activeSince)
+        assertEquals(180, done.wallClockSeconds, "wall clock still includes the time away")
+    }
+
+    @Test
+    fun `running interval is visible before the session ends`() {
+        val s = startActiveSession()
+        clock.advanceSeconds(45)
+        assertEquals(45_000, store.get(s.id)!!.foregroundMsAt(clock.now))
+    }
+
+    @Test
+    fun `foreground time keeps counting on the expiry checkpoint until the user leaves`() {
+        startActiveSession(seconds = 60)
+        clock.advanceSeconds(60)
+        engine.tick()
+        clock.advanceSeconds(20)
+        engine.onForegroundChanged(launcher)
+        assertEquals(80_000, only().foregroundMs)
+    }
+
+    @Test
+    fun `grace abandon does not count time away`() {
+        startActiveSession()
+        clock.advanceSeconds(10)
+        engine.onForegroundChanged(wa)
+        clock.advanceSeconds(500)
+        engine.tick()
+        assertEquals(10_000, only().foregroundMs)
+    }
+
+    @Test
+    fun `restore closes the interval that was open when the process died`() {
+        startActiveSession()
+        clock.advanceSeconds(40)
+        engine = newEngine()
+        engine.restore()
+        assertEquals(40_000, only().foregroundMs)
+        assertNull(only().activeSince)
+    }
+
+    @Test
+    fun `boot sweep never produces negative foreground time`() {
+        startActiveSession()
+        engine = newEngine()
+        engine.bootSweep()
+        assertEquals(0, only().foregroundMs)
+    }
 }

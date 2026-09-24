@@ -4,9 +4,13 @@ Local-first Android app that asks *why* before you open an app you've flagged, k
 intention visible while you're in it, and re-asks when your planned time runs out. No account,
 no backend, no telemetry.
 
-**Status: Phase 0 (technical feasibility POC).** Per the PRD, nothing past Phase 0 gets built
-until the GO/NO-GO criteria in [`docs/phase-0/POC_FINDINGS.md`](docs/phase-0/POC_FINDINGS.md)
-pass on real devices.
+**Status:** Phase 0 POC works on a physical device (vivo X200 FE). The core-loop UI is built:
+- **Native overlays:** checkpoint, reminder, time's up, session complete
+- **RN screens:** Today, Choose Apps
+
+See [`docs/design/core-loop-implementation.md`](docs/design/core-loop-implementation.md) for
+differences from the design reference. GO/NO-GO numbers still go in
+[`docs/phase-0/POC_FINDINGS.md`](docs/phase-0/POC_FINDINGS.md).
 
 ## What's in the POC
 
@@ -41,7 +45,7 @@ RN process (dev.intent.checkpoint)          :engine process (dev.intent.checkpoi
 
 - **`android/intent-core`** is plain Kotlin/JVM: the session state machine (PRD §16), foreground
   dedup, latency stats. It has no Android imports, so the logic that decides every transition is
-  unit-tested on the JVM (57 tests).
+  unit-tested on the JVM.
 - **The engine lives in its own process** and never loads React/Hermes. Killing or crashing the RN
   process can't stop monitoring, and the long-lived process stays small. See
   [ADR-011](docs/adr/ADR-011-engine-process.md).
@@ -72,7 +76,9 @@ npm run lint && npm run typecheck && npm test            # JS
 (cd android && ./gradlew assembleDebug)                  # full app (needs Android SDK)
 ```
 
-CI (`.github/workflows/ci.yml`) runs all three on every push.
+CI (`.github/workflows/ci.yml`) runs all three on every push, plus an **emulator job**: a real
+debug build that drives the overlay flow and uploads screenshots (`emulator-screenshots`).
+To preview the overlays on your own phone: Settings → Preview.
 
 ## Known limits (by design, per the PRD)
 

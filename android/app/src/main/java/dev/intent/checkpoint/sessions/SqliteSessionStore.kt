@@ -42,6 +42,26 @@ class SqliteSessionStore(private val db: IntentDatabase) : SessionStore {
         )
     }
 
+    // --- read model for the RN screens (not part of the engine's SessionStore contract) --------
+
+    /** Sessions created in `[fromMs, toMs)`, newest first. */
+    fun createdBetween(fromMs: Long, toMs: Long, limit: Int = 500): List<Session> =
+        query("created_at >= ? AND created_at < ?", arrayOf(fromMs.toString(), toMs.toString()), "created_at DESC", limit.toString())
+
+    /**
+     * Last distinct intentions the user typed for [packageName], for one-tap reuse on the
+     * checkpoint. Skips the "(unspecified)" placeholder.
+     */
+    fun recentIntentions(packageName: String, limit: Int = 3): List<String> =
+        db.readableDatabase.rawQuery(
+            """
+            SELECT intention FROM sessions
+            WHERE package_name = ? AND started_at IS NOT NULL AND intention != '' AND intention != ?
+            GROUP BY intention ORDER BY MAX(started_at) DESC LIMIT ?
+            """,
+            arrayOf(packageName, Session.UNSPECIFIED_INTENTION, limit.toString()),
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
     private fun queryOne(where: String, args: Array<String>): Session? =
         query(where, args, orderBy = "created_at DESC", limit = "1").firstOrNull()
 
@@ -66,6 +86,8 @@ class SqliteSessionStore(private val db: IntentDatabase) : SessionStore {
         put("backgrounded_at", backgroundedAt)
         put("created_at", createdAt)
         put("updated_at", updatedAt)
+        put("foreground_ms", foregroundMs)
+        put("active_since", activeSince)
     }
 
     private fun Cursor.toSession() = Session(
@@ -84,6 +106,8 @@ class SqliteSessionStore(private val db: IntentDatabase) : SessionStore {
         backgroundedAt = long("backgrounded_at"),
         createdAt = long("created_at")!!,
         updatedAt = long("updated_at")!!,
+        foregroundMs = long("foreground_ms") ?: 0,
+        activeSince = long("active_since"),
     )
 
     private fun Cursor.str(col: String): String? =

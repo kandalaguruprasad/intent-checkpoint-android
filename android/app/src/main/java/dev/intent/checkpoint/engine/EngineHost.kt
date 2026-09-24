@@ -14,9 +14,12 @@ import dev.intent.checkpoint.service.ExpiryAlarmScheduler
 import dev.intent.checkpoint.sessions.EngineSettings
 import dev.intent.checkpoint.sessions.IntentDatabase
 import dev.intent.checkpoint.sessions.LatencyLog
+import dev.intent.checkpoint.sessions.MonitoredAppRow
+import dev.intent.checkpoint.sessions.MonitoredAppsRepo
 import dev.intent.checkpoint.sessions.SqliteRuleProvider
 import dev.intent.checkpoint.sessions.SqliteSessionStore
 import dev.intent.core.CompletionReason
+import dev.intent.core.DailySummary
 import dev.intent.core.EngineEffect
 import dev.intent.core.ForegroundChange
 import dev.intent.core.ForegroundTracker
@@ -55,6 +58,8 @@ class EngineHost private constructor(context: Context, startReason: StartReason)
     private val dbRules = SqliteRuleProvider(db)
     private val settings = EngineSettings(db)
     private val latency = LatencyLog(db)
+    private val store = SqliteSessionStore(db)
+    private val monitoredApps = MonitoredAppsRepo(db) { dbRules.invalidate() }
 
     @Volatile private var permissions: PermissionSnapshot = PermissionChecker.snapshot(app)
 
@@ -65,7 +70,7 @@ class EngineHost private constructor(context: Context, startReason: StartReason)
     private val rules = RuleProvider { pkg -> if (permissions.overlay) dbRules.ruleFor(pkg) else null }
 
     private val engine = SessionEngine(
-        store = SqliteSessionStore(db),
+        store = store,
         rules = rules,
         clock = { System.currentTimeMillis() },
         ids = { UUID.randomUUID().toString() },
@@ -74,6 +79,7 @@ class EngineHost private constructor(context: Context, startReason: StartReason)
     private val usage = UsageEventsSource(app)
     private val power = app.getSystemService(PowerManager::class.java)
     private val overlay = OverlayController(app, this)
+    private val preview = OverlayPreview(app)
     private val alarms = ExpiryAlarmScheduler(app)
     private val events = EngineEvents(app)
     private val policy = PollPolicy()
@@ -163,6 +169,26 @@ class EngineHost private constructor(context: Context, startReason: StartReason)
 
     fun activeSession(): Session? = call { engine.activeSession() }
 
+    /** Sessions created in `[fromMs, toMs)` — the caller picks the local-day bounds. */
+    fun sessions(fromMs: Long, toMs: Long, limit: Int): List<Session> = call { store.createdBetween(fromMs, toMs, limit) }
+
+    fun summary(fromMs: Long, toMs: Long): DailySummary =
+        call { DailySummary.of(store.createdBetween(fromMs, toMs), System.currentTimeMillis()) }
+
+    fun monitoredApps(): List<MonitoredAppRow> = call { monitoredApps.list() }
+
+    fun setMonitoredApps(apps: List<MonitoredAppRow>) = call { monitoredApps.replaceAll(apps, app.packageName) }
+
+    var onboardingComplete: Boolean
+        get() = call { settings.onboardingComplete }
+        set(value) = call { settings.onboardingComplete = value }
+
+    /** Renders one overlay surface with fixture data; never touches sessions (design preview). */
+    fun previewOverlay(kind: String) {
+        val pkg = call { monitoredApps.list().firstOrNull()?.packageName } ?: app.packageName
+        preview.show(kind, pkg)
+    }
+
     fun latencySummary(): LatencySummary = call { latency.summary() }
 
     fun clearLatency() = call { latency.clear() }
@@ -249,7 +275,8 @@ class EngineHost private constructor(context: Context, startReason: StartReason)
         for (fx in effects) {
             when (fx) {
                 is EngineEffect.ShowPause -> overlay.showPause(fx.session, fx.pauseMs)
-                is EngineEffect.ShowIntentionForm -> overlay.showIntentionForm(fx.session, fx.rule)
+                is EngineEffect.ShowIntentionForm ->
+                    overlay.showIntentionForm(fx.session, fx.rule, store.recentIntentions(fx.session.packageName))
                 is EngineEffect.ShowReminder -> overlay.showReminder(fx.session, fx.warningsEnabled)
                 is EngineEffect.HideReminder -> overlay.hideReminder()
                 is EngineEffect.ShowExpired -> overlay.showExpired(fx.session, fx.extensionAllowed)

@@ -13,6 +13,7 @@ import dev.intent.checkpoint.engine.EngineLog
 import dev.intent.checkpoint.sessions.SessionJson
 import dev.intent.core.CompletionReason
 import dev.intent.core.EngineException
+import org.json.JSONArray
 
 /**
  * Synchronous RPC into the `:engine` process via [ContentProvider.call]: no AIDL, not exported,
@@ -64,6 +65,30 @@ class EngineProvider : ContentProvider() {
                     putBoolean(P.KEY_ENABLED, host.isMonitoringEnabled)
                     putBoolean(P.KEY_RUNNING, host.isPolling)
                     putStringArrayList(P.KEY_PACKAGES, ArrayList(host.monitoredPackages()))
+                }
+                P.GET_SUMMARY -> Bundle().apply {
+                    putString(P.KEY_JSON, SessionJson.toJson(host.summary(x.getLong(P.KEY_FROM), x.getLong(P.KEY_TO))).toString())
+                }
+                P.LIST_SESSIONS -> Bundle().apply {
+                    val now = System.currentTimeMillis()
+                    val list = host.sessions(x.getLong(P.KEY_FROM), x.getLong(P.KEY_TO), x.getInt(P.KEY_LIMIT, 200))
+                    putString(P.KEY_JSON, JSONArray(list.map { SessionJson.toJson(it, now) }).toString())
+                }
+                P.GET_MONITORED_APPS -> Bundle().apply {
+                    putString(P.KEY_JSON, SessionJson.monitoredToJson(host.monitoredApps()).toString())
+                }
+                P.SET_MONITORED_APPS -> {
+                    host.setMonitoredApps(SessionJson.monitoredFromJson(x.required(P.KEY_JSON)))
+                    Bundle()
+                }
+                P.GET_ONBOARDING -> Bundle().apply { putBoolean(P.KEY_DONE, host.onboardingComplete) }
+                P.SET_ONBOARDING -> {
+                    host.onboardingComplete = x.getBoolean(P.KEY_DONE)
+                    Bundle()
+                }
+                P.PREVIEW_OVERLAY -> {
+                    host.previewOverlay(x.required(P.KEY_KIND))
+                    Bundle()
                 }
                 else -> error(P.E_UNKNOWN_METHOD, method)
             }

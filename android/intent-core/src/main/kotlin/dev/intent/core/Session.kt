@@ -57,8 +57,23 @@ data class Session(
     val backgroundedAt: Long?,
     val createdAt: Long,
     val updatedAt: Long,
+    /**
+     * Time the target app was actually in front during this session, closed intervals only.
+     * Wall-clock ([wallClockSeconds]) stays the timer metric (ADR-004); this is what the user sees
+     * as "actual" on the completion card.
+     */
+    val foregroundMs: Long = 0,
+    /** Start of the currently open in-front interval, or null while the app is not in front. */
+    val activeSince: Long? = null,
 ) {
     fun remainingMs(nowMs: Long): Long? = plannedEndAt?.let { (it - nowMs).coerceAtLeast(0) }
+
+    /** Foreground time including the interval still running at [nowMs]. */
+    fun foregroundMsAt(nowMs: Long): Long =
+        foregroundMs + (activeSince?.let { (nowMs - it).coerceAtLeast(0) } ?: 0)
+
+    /** Wall-clock time since the session started (for the no-timer pill). */
+    fun elapsedMs(nowMs: Long): Long = startedAt?.let { (nowMs - it).coerceAtLeast(0) } ?: 0
 
     fun warningLevel(nowMs: Long): WarningLevel {
         val remaining = remainingMs(nowMs) ?: return WarningLevel.NONE
@@ -73,7 +88,7 @@ data class Session(
     override fun toString(): String =
         "Session(id=$id, pkg=$packageName, state=$state, intention=[REDACTED], " +
             "startedAt=$startedAt, plannedEndAt=$plannedEndAt, endedAt=$endedAt, " +
-            "extensions=$extensionCount, reason=${completionReason?.wire})"
+            "extensions=$extensionCount, foregroundMs=$foregroundMs, reason=${completionReason?.wire})"
 
     companion object {
         const val UNSPECIFIED_INTENTION = "(unspecified)"
