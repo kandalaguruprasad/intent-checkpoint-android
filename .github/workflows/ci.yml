@@ -94,12 +94,11 @@ jobs:
           disable-animations: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash scripts/ci/emulator-run.sh
-      - name: Contact sheet
+      - name: Step log and contact sheet
         if: always()
         run: |
-          cd emulator-output && ls *.png >/dev/null 2>&1 || exit 0
-          montage -label '%t' -pointsize 28 -geometry 360x+12+12 -tile 6x *.png ../contact-sheet.jpg || true
-          cat steps.txt || true
+          cat emulator-output/steps.txt || true
+          pip install --quiet pillow && python3 scripts/ci/contact_sheet.py emulator-output contact-sheet.jpg || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -108,3 +107,21 @@ jobs:
             emulator-output/
             contact-sheet.jpg
           retention-days: 14
+
+  # Prints thumbnails into the job log (3 jobs, so each log stays small) for reviewers who
+  # can read logs but can't download artifacts.
+  emulator-screenshots-log:
+    name: Emulator screenshots in log (${{ matrix.batch }})
+    needs: emulator
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        batch: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: emulator-screenshots
+          path: shots
+      - run: pip install --quiet pillow && python3 scripts/ci/print_shots.py shots/emulator-output ${{ matrix.batch }} 3

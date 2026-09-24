@@ -175,5 +175,6 @@ adb shell appops set $PKG GET_USAGE_STATS allow
 debug_cmd latency; sleep 2
 adb logcat -d -s IntentEngine IntentDebug AndroidRuntime > "$OUT/logcat.txt"
 grep -h "LATENCY" "$OUT/logcat.txt" | tail -1 | tee -a "$STEPS"
-grep -c "FATAL EXCEPTION" "$OUT/logcat.txt" | xargs -I{} log "fatal exceptions in logcat: {}"
+grep -hE "detected |polling|overlay addView failed|could not" "$OUT/logcat.txt" | tee -a "$STEPS"
+log "fatal exceptions in logcat: $(grep -c 'FATAL EXCEPTION' "$OUT/logcat.txt")"
 log "done"
