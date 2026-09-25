@@ -3,6 +3,9 @@ name: Build device APK
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     name: Build release APK (debug-signed, for direct install)
@@ -29,3 +32,11 @@ jobs:
           name: app-release-device
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 7
+      # Actions-artifact downloads require GitHub auth; a release asset is a plain
+      # public URL, easier to fetch from anywhere.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-build-${{ github.run_number }}
+          name: Device APK build ${{ github.run_number }}
+          body: Debug-signed release APK for arm64-v8a / armeabi-v7a, built from ${{ github.sha }}.
+          files: android/app/build/outputs/apk/release/*.apk
