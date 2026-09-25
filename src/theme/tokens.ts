@@ -1,38 +1,33 @@
 /**
  * Design tokens (design brief). Mirrored in android/.../overlay/OverlayUi.kt `OverlayPalette`
  * so RN screens and native overlays read as one product. Change both together.
+ *
+ * One fixed light identity, blue accent — the app no longer follows the system dark/light
+ * setting (see usePalette below). Every color here holds AA contrast against `background` or
+ * `surface` at normal text sizes; `primary` was checked at 5.2:1 against `onPrimary`.
  */
-import { StyleSheet, useColorScheme } from 'react-native';
+import { StyleSheet } from 'react-native';
 
 export const light = {
-  background: '#F7F7F4',
+  background: '#F7F8FA',
   surface: '#FFFFFF',
-  text: '#1B2420',
-  muted: '#5E6B64',
-  border: '#DDE3DD',
-  primary: '#507764',
+  text: '#151A21',
+  muted: '#5B6472',
+  border: '#E1E5EA',
+  primary: '#2563EB',
   onPrimary: '#FFFFFF',
-  primarySoft: '#E4ECE7',
-  amber: '#B67932',
-  amberSoft: '#F6EBDD',
-  track: '#E8ECE8',
+  primarySoft: '#E3ECFC',
+  amber: '#B7791F',
+  amberSoft: '#FBF0DE',
+  success: '#2E9B58',
+  danger: '#D14343',
+  track: '#EAEDF1',
 };
 
 export type Palette = typeof light;
 
-export const dark: Palette = {
-  background: '#151B19',
-  surface: '#1F2724',
-  text: '#F2F5F3',
-  muted: '#A7B3AD',
-  border: '#34403A',
-  primary: '#8DB09C',
-  onPrimary: '#10201A',
-  primarySoft: '#26352E',
-  amber: '#E0A560',
-  amberSoft: '#3A2D1D',
-  track: '#2B3531',
-};
+/** Kept only for anything that still reads `dark` directly; the app itself always renders `light`. */
+export const dark: Palette = light;
 
 /** 8 dp grid. */
 export const space = { xs: 4, s: 8, m: 16, l: 20, xl: 24, xxl: 32 } as const;
@@ -52,8 +47,9 @@ export const type = {
 /** Minimum touch target (dp). */
 export const TOUCH = 48;
 
+/** Always the light palette: a single fixed identity instead of following system dark mode. */
 export function usePalette(): Palette {
-  return useColorScheme() === 'dark' ? dark : light;
+  return light;
 }
 
 /** Small shared layout/type helpers so screens don't need inline literal styles. */

@@ -331,7 +331,11 @@ export function ChooseAppsScreen({
         <View style={layout.minW140}>
           <Button
             label={saving ? 'Saving…' : mode === 'edit' ? 'Save' : 'Continue'}
-            disabled={count === 0 || saving || apps === null}
+            // Onboarding needs at least one app to set up monitoring for; editing an existing
+            // list should be able to save down to zero (that's how you turn monitoring off).
+            disabled={
+              (mode === 'onboarding' && count === 0) || saving || apps === null
+            }
             onPress={save}
           />
         </View>

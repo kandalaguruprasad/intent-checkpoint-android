@@ -236,8 +236,7 @@ export function StatusPill({
   label: string;
 }) {
   const c = usePalette();
-  const dot =
-    tone === 'ok' ? '#3E9B6A' : tone === 'attention' ? c.amber : c.muted;
+  const dot = tone === 'ok' ? c.success : tone === 'attention' ? c.amber : c.muted;
   return (
     <View
       accessible

@@ -2,7 +2,6 @@ package dev.intent.checkpoint.overlay
 
 import android.content.Context
 import android.content.res.ColorStateList
-import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -19,6 +18,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -29,30 +29,24 @@ import dev.intent.checkpoint.monitoring.AppIcons
 
 /**
  * Design tokens for the native overlays. Mirrors src/theme/tokens.ts so RN screens and overlays
- * read as one product. Solid surfaces only: no blur, no heavy elevation (design brief).
+ * read as one product: one fixed light identity, blue accent, no system dark-mode following.
+ * Solid surfaces only: no blur, no heavy elevation (design brief).
  */
-internal class OverlayPalette private constructor(val dark: Boolean) {
-    val background = if (dark) 0xFF151B19.toInt() else 0xFFF7F7F4.toInt()
-    val surface = if (dark) 0xFF1F2724.toInt() else 0xFFFFFFFF.toInt()
-    val text = if (dark) 0xFFF2F5F3.toInt() else 0xFF1B2420.toInt()
-    val muted = if (dark) 0xFFA7B3AD.toInt() else 0xFF5E6B64.toInt()
-    val border = if (dark) 0xFF34403A.toInt() else 0xFFDDE3DD.toInt()
-    val primary = if (dark) 0xFF8DB09C.toInt() else 0xFF507764.toInt()
-    val onPrimary = if (dark) 0xFF10201A.toInt() else Color.WHITE
-    val amber = if (dark) 0xFFE0A560.toInt() else 0xFFB67932.toInt()
+internal class OverlayPalette private constructor() {
+    val background = 0xFFF7F8FA.toInt()
+    val surface = 0xFFFFFFFF.toInt()
+    val text = 0xFF151A21.toInt()
+    val muted = 0xFF5B6472.toInt()
+    val border = 0xFFE1E5EA.toInt()
+    val primary = 0xFF2563EB.toInt()
+    val onPrimary = Color.WHITE
+    val amber = 0xFFB7791F.toInt()
 
     companion object {
-        /** Follows the system setting: the intention checkpoint. */
-        fun system(context: Context) = OverlayPalette(
-            (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-                Configuration.UI_MODE_NIGHT_YES,
-        )
+        val LIGHT = OverlayPalette()
 
-        /** Always dark: Time's up, extension, completion, and the reminder pill (reads over any app). */
-        val DARK = OverlayPalette(true)
-
-        /** Amber-tinted dark surface for the pill's timer warnings. */
-        const val PILL_WARNING_BG = 0xFF2B2217.toInt()
+        /** Amber-tinted light surface for the pill's timer warnings. */
+        const val PILL_WARNING_BG = 0xFFFBF0DE.toInt()
     }
 }
 
@@ -76,11 +70,24 @@ internal fun rounded(color: Int, radiusPx: Float, strokeColor: Int? = null, stro
 internal fun pressable(background: Drawable, rippleColor: Int): Drawable =
     RippleDrawable(ColorStateList.valueOf(rippleColor), background, null)
 
-/** Root for focusable overlay windows: routes the system back key to [onBack]. */
+/**
+ * Root for focusable overlay windows: routes the system back key to [onBack] — unless a text
+ * field currently has focus, in which case back only dismisses the keyboard (bug: back was
+ * navigating away instead of just closing the IME while typing).
+ */
 internal class BackAwareFrame(context: Context, private val onBack: () -> Unit) : FrameLayout(context) {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) onBack()
+            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+                val focused = findFocus()
+                if (focused is EditText) {
+                    context.getSystemService(InputMethodManager::class.java)
+                        ?.hideSoftInputFromWindow(focused.windowToken, 0)
+                    focused.clearFocus()
+                } else {
+                    onBack()
+                }
+            }
             return true
         }
         return super.dispatchKeyEvent(event)
@@ -190,6 +197,24 @@ internal class OverlayViews(private val context: Context, val p: OverlayPalette)
         }
     }
 
+    /** App icon clipped to a perfect circle, regardless of the launcher icon's own shape. */
+    fun circularAppIcon(packageName: String, sizeDp: Int): View {
+        val inner = appIcon(packageName, sizeDp).apply {
+            layoutParams = FrameLayout.LayoutParams(context.dp(sizeDp), context.dp(sizeDp))
+        }
+        return FrameLayout(context).apply {
+            background = rounded(p.border, context.dpf(sizeDp) / 2f)
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setOval(0, 0, view.width, view.height)
+                }
+            }
+            addView(inner)
+            layoutParams = LinearLayout.LayoutParams(context.dp(sizeDp), context.dp(sizeDp))
+        }
+    }
+
     fun title(text: String, sizeSp: Float = 26f, color: Int = p.text): TextView = TextView(context).apply {
         this.text = text
         setTextColor(color)
@@ -285,20 +310,33 @@ internal class OverlayViews(private val context: Context, val p: OverlayPalette)
 
     fun textButton(text: String, onClick: () -> Unit): Button = button(text, filled = false, outlined = false, onClick)
 
-    private fun button(text: String, filled: Boolean, outlined: Boolean, onClick: () -> Unit): Button =
+    /** Smaller variant for tight spaces (the floating pill's Done/End) — still ≥40 dp tall. */
+    fun compactPrimary(text: String, onClick: () -> Unit): Button = button(text, filled = true, outlined = false, onClick, compactHeightDp = 40, textSp = 14f)
+
+    fun compactOutlined(text: String, onClick: () -> Unit): Button = button(text, filled = false, outlined = true, onClick, compactHeightDp = 40, textSp = 14f)
+
+    private fun button(
+        text: String,
+        filled: Boolean,
+        outlined: Boolean,
+        onClick: () -> Unit,
+        compactHeightDp: Int? = null,
+        textSp: Float = 16f,
+    ): Button =
         Button(context).apply {
             this.text = text
             isAllCaps = false
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            val h = if (filled || outlined) context.dp(52) else minTouch
+            val h = compactHeightDp?.let { context.dp(it) } ?: if (filled || outlined) context.dp(52) else minTouch
             minHeight = h
             minimumHeight = h
             stateListAnimator = null
+            val cornerDp = if (compactHeightDp != null) compactHeightDp / 2f else 26f
             val bg = when {
-                filled -> rounded(p.primary, context.dpf(26))
-                outlined -> rounded(Color.TRANSPARENT, context.dpf(26), p.text, context.dp(1))
-                else -> rounded(Color.TRANSPARENT, context.dpf(26))
+                filled -> rounded(p.primary, context.dpf(cornerDp.toInt()))
+                outlined -> rounded(Color.TRANSPARENT, context.dpf(cornerDp.toInt()), p.text, context.dp(1))
+                else -> rounded(Color.TRANSPARENT, context.dpf(cornerDp.toInt()))
             }
             background = pressable(bg, p.border)
             setTextColor(if (filled) p.onPrimary else p.text)
